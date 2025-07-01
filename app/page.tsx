@@ -320,6 +320,9 @@ export default function ProductRegistrationApp() {
       setTimeout(() => setImportError(""), 3000)
       setIsLoading(false)
     }
+
+    // Reset the file input
+    e.target.value = ""
   }
 
   const handleExportUsersExcel = async () => {
