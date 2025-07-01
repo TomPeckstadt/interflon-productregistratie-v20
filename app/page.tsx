@@ -188,32 +188,75 @@ export default function ProductRegistrationApp() {
   const [badgeId, setBadgeId] = useState("")
   const [badgeError, setBadgeError] = useState("")
 
-  // FIXED: Import/Export functions with proper XLSX handling
+  // Helper function to escape CSV values
+  const escapeCSVValue = (value: string): string => {
+    if (value.includes(",") || value.includes('"') || value.includes("\n")) {
+      return `"${value.replace(/"/g, '""')}"`
+    }
+    return value
+  }
+
+  // Helper function to parse CSV line
+  const parseCSVLine = (line: string): string[] => {
+    const result: string[] = []
+    let current = ""
+    let inQuotes = false
+    let i = 0
+
+    while (i < line.length) {
+      const char = line[i]
+
+      if (char === '"') {
+        if (inQuotes && line[i + 1] === '"') {
+          current += '"'
+          i += 2
+        } else {
+          inQuotes = !inQuotes
+          i++
+        }
+      } else if (char === "," && !inQuotes) {
+        result.push(current.trim())
+        current = ""
+        i++
+      } else {
+        current += char
+        i++
+      }
+    }
+
+    result.push(current.trim())
+    return result
+  }
+
+  // FIXED: Import/Export functions with CSV format (Excel compatible)
   const handleImportUsersExcel = async (e: any) => {
     const file = e.target.files[0]
     if (!file) return
 
     setIsLoading(true)
-    setImportMessage("📥 Bezig met lezen van Excel bestand...")
+    setImportMessage("📥 Bezig met lezen van bestand...")
 
     try {
-      // Dynamic import of xlsx library
-      const XLSX = await import("xlsx")
-
       const reader = new FileReader()
       reader.onload = async (event: any) => {
         try {
-          const data = new Uint8Array(event.target.result)
-          const workbook = XLSX.read(data, { type: "array" })
-          const sheetName = workbook.SheetNames[0]
-          const worksheet = workbook.Sheets[sheetName]
-          const jsonData = XLSX.utils.sheet_to_json(worksheet)
+          const text = event.target.result
+          const lines = text.split("\n").filter((line: string) => line.trim())
 
-          console.log("📋 Parsed Excel data:", jsonData)
-
-          if (jsonData.length === 0) {
-            setImportError("Excel bestand is leeg")
+          if (lines.length === 0) {
+            setImportError("Bestand is leeg")
             setTimeout(() => setImportError(""), 3000)
+            setIsLoading(false)
+            return
+          }
+
+          // Parse header
+          const header = parseCSVLine(lines[0])
+          console.log("📋 Parsed header:", header)
+
+          if (header.length < 3) {
+            setImportError("Ongeldig bestandsformaat. Verwacht: Naam, Email, Wachtwoord, Niveau, Badge Code")
+            setTimeout(() => setImportError(""), 5000)
             setIsLoading(false)
             return
           }
@@ -221,13 +264,16 @@ export default function ProductRegistrationApp() {
           let successCount = 0
           let errorCount = 0
 
-          for (const row of jsonData) {
+          for (let i = 1; i < lines.length; i++) {
+            const data = parseCSVLine(lines[i])
+            if (data.length < 3) continue
+
             const userData = {
-              name: row["Naam"]?.toString()?.trim(),
-              email: row["Email"]?.toString()?.trim(),
-              password: row["Wachtwoord"]?.toString()?.trim(),
-              level: row["Niveau"]?.toString()?.trim() || "user",
-              badgeCode: row["Badge Code"]?.toString()?.trim() || "",
+              name: data[0]?.trim(),
+              email: data[1]?.trim(),
+              password: data[2]?.trim(),
+              level: data[3]?.trim() || "user",
+              badgeCode: data[4]?.trim() || "",
             }
 
             console.log("👤 Processing user:", userData)
@@ -299,8 +345,8 @@ export default function ProductRegistrationApp() {
             setImportError("")
           }, 5000)
         } catch (error) {
-          console.error("❌ Error parsing Excel file:", error)
-          setImportError("Fout bij lezen van Excel bestand. Zorg ervoor dat het een geldig .xlsx bestand is.")
+          console.error("❌ Error parsing file:", error)
+          setImportError("Fout bij lezen van bestand. Zorg ervoor dat het een geldig CSV bestand is.")
           setTimeout(() => setImportError(""), 5000)
         } finally {
           setIsLoading(false)
@@ -313,10 +359,10 @@ export default function ProductRegistrationApp() {
         setIsLoading(false)
       }
 
-      reader.readAsArrayBuffer(file)
+      reader.readAsText(file)
     } catch (error) {
-      console.error("❌ Error importing Excel:", error)
-      setImportError("Fout bij importeren van Excel bestand")
+      console.error("❌ Error importing file:", error)
+      setImportError("Fout bij importeren van bestand")
       setTimeout(() => setImportError(""), 3000)
       setIsLoading(false)
     }
@@ -327,47 +373,42 @@ export default function ProductRegistrationApp() {
 
   const handleExportUsersExcel = async () => {
     try {
-      setImportMessage("📤 Bezig met exporteren naar Excel...")
-
-      // Dynamic import of xlsx library
-      const XLSX = await import("xlsx")
+      setImportMessage("📤 Bezig met exporteren naar CSV...")
 
       // Prepare data for export
-      const exportData = users.map((user) => ({
-        Naam: user.name,
-        Email: `${user.name.toLowerCase().replace(/\s+/g, ".")}@dematic.com`,
-        Wachtwoord: "", // Empty for security
-        Niveau: user.role,
-        "Badge Code": user.badgeCode || "",
-      }))
+      const exportData = users.map((user) => [
+        escapeCSVValue(user.name),
+        escapeCSVValue(`${user.name.toLowerCase().replace(/\s+/g, ".")}@dematic.com`),
+        escapeCSVValue(""), // Empty password for security
+        escapeCSVValue(user.role),
+        escapeCSVValue(user.badgeCode || ""),
+      ])
 
       console.log("📤 Export data prepared:", exportData)
 
-      // Create workbook and worksheet
-      const workbook = XLSX.utils.book_new()
-      const worksheet = XLSX.utils.json_to_sheet(exportData)
+      // Create CSV content
+      const header = ["Naam", "Email", "Wachtwoord", "Niveau", "Badge Code"]
+      const csvContent = [
+        header.map((h) => escapeCSVValue(h)).join(","),
+        ...exportData.map((row) => row.join(",")),
+      ].join("\n")
 
-      // Set column widths
-      const colWidths = [
-        { wch: 25 }, // Naam
-        { wch: 30 }, // Email
-        { wch: 15 }, // Wachtwoord
-        { wch: 10 }, // Niveau
-        { wch: 15 }, // Badge Code
-      ]
-      worksheet["!cols"] = colWidths
+      // Create and download file
+      const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" })
+      const url = window.URL.createObjectURL(blob)
+      const a = document.createElement("a")
+      a.setAttribute("href", url)
+      a.setAttribute("download", "gebruikers_export.csv")
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      window.URL.revokeObjectURL(url)
 
-      // Add worksheet to workbook
-      XLSX.utils.book_append_sheet(workbook, worksheet, "Gebruikers")
-
-      // Generate Excel file and download
-      XLSX.writeFile(workbook, "gebruikers_export.xlsx")
-
-      setImportMessage("✅ Gebruikers geëxporteerd naar Excel!")
+      setImportMessage("✅ Gebruikers geëxporteerd naar CSV!")
       setTimeout(() => setImportMessage(""), 3000)
     } catch (error) {
-      console.error("❌ Error exporting to Excel:", error)
-      setImportError("Fout bij exporteren naar Excel")
+      console.error("❌ Error exporting to CSV:", error)
+      setImportError("Fout bij exporteren naar CSV")
       setTimeout(() => setImportError(""), 3000)
     }
   }
@@ -376,48 +417,40 @@ export default function ProductRegistrationApp() {
     try {
       setImportMessage("📄 Bezig met maken van template...")
 
-      // Dynamic import of xlsx library
-      const XLSX = await import("xlsx")
-
       // Create template with headers and example data
       const templateData = [
-        {
-          Naam: "Jan Janssen",
-          Email: "jan.janssen@dematic.com",
-          Wachtwoord: "wachtwoord123",
-          Niveau: "user",
-          "Badge Code": "BADGE001",
-        },
-        {
-          Naam: "Marie Peeters",
-          Email: "marie.peeters@dematic.com",
-          Wachtwoord: "veiligwachtwoord",
-          Niveau: "admin",
-          "Badge Code": "BADGE002",
-        },
+        ["Naam", "Email", "Wachtwoord", "Niveau", "Badge Code"],
+        [
+          escapeCSVValue("Jan Janssen"),
+          escapeCSVValue("jan.janssen@dematic.com"),
+          escapeCSVValue("wachtwoord123"),
+          escapeCSVValue("user"),
+          escapeCSVValue("BADGE001"),
+        ],
+        [
+          escapeCSVValue("Marie Peeters"),
+          escapeCSVValue("marie.peeters@dematic.com"),
+          escapeCSVValue("veiligwachtwoord"),
+          escapeCSVValue("admin"),
+          escapeCSVValue("BADGE002"),
+        ],
       ]
 
       console.log("📄 Template data prepared:", templateData)
 
-      // Create workbook and worksheet
-      const workbook = XLSX.utils.book_new()
-      const worksheet = XLSX.utils.json_to_sheet(templateData)
+      // Create CSV content
+      const csvContent = templateData.map((row) => row.join(",")).join("\n")
 
-      // Set column widths
-      const colWidths = [
-        { wch: 25 }, // Naam
-        { wch: 30 }, // Email
-        { wch: 20 }, // Wachtwoord
-        { wch: 10 }, // Niveau
-        { wch: 15 }, // Badge Code
-      ]
-      worksheet["!cols"] = colWidths
-
-      // Add worksheet to workbook
-      XLSX.utils.book_append_sheet(workbook, worksheet, "Gebruikers Template")
-
-      // Generate Excel file and download
-      XLSX.writeFile(workbook, "gebruikers_template.xlsx")
+      // Create and download file
+      const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" })
+      const url = window.URL.createObjectURL(blob)
+      const a = document.createElement("a")
+      a.setAttribute("href", url)
+      a.setAttribute("download", "gebruikers_template.csv")
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      window.URL.revokeObjectURL(url)
 
       setImportMessage("✅ Template gedownload!")
       setTimeout(() => setImportMessage(""), 3000)
@@ -2604,7 +2637,7 @@ export default function ProductRegistrationApp() {
                               <div>
                                 <input
                                   type="file"
-                                  accept=".xlsx,.xls"
+                                  accept=".csv,.txt"
                                   onChange={handleImportUsersExcel}
                                   className="hidden"
                                   id="users-excel-import"
@@ -2615,7 +2648,7 @@ export default function ProductRegistrationApp() {
                                   className="flex items-center gap-2 bg-blue-50 text-blue-600 border-blue-200 hover:bg-blue-100"
                                   disabled={isLoading}
                                 >
-                                  📥 Import Excel
+                                  📥 Import CSV
                                 </Button>
                               </div>
                               <Button
@@ -2624,13 +2657,14 @@ export default function ProductRegistrationApp() {
                                 className="flex items-center gap-2 bg-amber-50 text-amber-600 border-amber-200 hover:bg-amber-100"
                                 disabled={isLoading}
                               >
-                                📤 Export Excel
+                                📤 Export CSV
                               </Button>
                             </div>
                             <div className="mt-2 text-xs text-blue-600">
                               <p>💡 Download eerst de template voor het juiste formaat</p>
                               <p>📋 Kolommen: Naam | Email | Wachtwoord | Niveau (user/admin) | Badge Code</p>
                               <p>🔒 Wachtwoord moet minimaal 6 tekens lang zijn</p>
+                              <p>📄 Bestanden kunnen worden geopend in Excel</p>
                             </div>
                           </div>
 
@@ -3098,45 +3132,51 @@ export default function ProductRegistrationApp() {
                           className="flex items-center gap-2"
                         >
                           <Plus className="h-4 w-4" />
-                          Toevoegen
+                          Categorie Toevoegen
                         </Button>
                       </div>
 
-                      <div className="grid gap-2">
-                        {categories.map((category) => (
-                          <div
-                            key={category.id}
-                            className="flex items-center justify-between p-3 bg-gray-50 rounded-lg border"
-                          >
-                            <span className="font-medium">{category.name}</span>
-                            <div className="flex items-center gap-2">
-                              <Button
-                                variant="outline"
-                                size="icon"
-                                onClick={() => handleEditCategory(category)}
-                                className="bg-amber-50 text-amber-600 border-amber-200 hover:bg-amber-100"
-                              >
-                                <Edit className="h-4 w-4" />
-                              </Button>
-                              <Button
-                                variant="outline"
-                                size="sm"
-                                onClick={() => removeCategory(category)}
-                                className="text-red-600 hover:text-red-700 hover:bg-red-50"
-                              >
-                                <Trash2 className="h-4 w-4" />
-                              </Button>
-                            </div>
+                      <div className="space-y-2">
+                        {categories.length === 0 ? (
+                          <div className="text-center py-8 text-gray-500">
+                            <div className="text-4xl mb-2">🗂️</div>
+                            <p>Geen categorieën gevonden</p>
+                            <p className="text-sm mt-2">Voeg hierboven een nieuwe categorie toe</p>
                           </div>
-                        ))}
+                        ) : (
+                          categories.map((category) => (
+                            <div
+                              key={category.id}
+                              className="flex items-center justify-between p-4 bg-gray-50 rounded-lg border"
+                            >
+                              <div className="flex-1">
+                                <div className="font-medium text-gray-900">{category.name}</div>
+                                <div className="text-sm text-gray-600">
+                                  {products.filter((p) => p.categoryId === category.id).length} producten
+                                </div>
+                              </div>
+                              <div className="flex items-center gap-2">
+                                <Button
+                                  variant="outline"
+                                  size="icon"
+                                  onClick={() => handleEditCategory(category)}
+                                  className="bg-amber-50 text-amber-600 border-amber-200 hover:bg-amber-100"
+                                >
+                                  <Edit className="h-4 w-4" />
+                                </Button>
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  onClick={() => removeCategory(category)}
+                                  className="text-red-600 hover:text-red-700 hover:bg-red-50"
+                                >
+                                  <Trash2 className="h-4 w-4" />
+                                </Button>
+                              </div>
+                            </div>
+                          ))
+                        )}
                       </div>
-
-                      {categories.length === 0 && (
-                        <div className="text-center py-8 text-gray-500">
-                          <div className="text-4xl mb-2">🗂️</div>
-                          <p>Geen categorieën gevonden</p>
-                        </div>
-                      )}
                     </div>
                   </CardContent>
                 </Card>
@@ -3144,9 +3184,9 @@ export default function ProductRegistrationApp() {
 
               <TabsContent value="locations">
                 <Card className="shadow-sm">
-                  <CardHeader className="bg-gradient-to-r from-teal-50 to-cyan-50 border-b">
+                  <CardHeader className="bg-gradient-to-r from-purple-50 to-pink-50 border-b">
                     <CardTitle className="flex items-center gap-2 text-xl">📍 Locaties Beheer</CardTitle>
-                    <CardDescription>Beheer beschikbare locaties voor product registratie</CardDescription>
+                    <CardDescription>Beheer locaties waar producten gebruikt kunnen worden</CardDescription>
                   </CardHeader>
                   <CardContent className="p-6">
                     <div className="space-y-6">
@@ -3165,45 +3205,51 @@ export default function ProductRegistrationApp() {
                           className="flex items-center gap-2"
                         >
                           <Plus className="h-4 w-4" />
-                          Toevoegen
+                          Locatie Toevoegen
                         </Button>
                       </div>
 
-                      <div className="grid gap-2">
-                        {locations.map((location) => (
-                          <div
-                            key={location}
-                            className="flex items-center justify-between p-3 bg-gray-50 rounded-lg border"
-                          >
-                            <span className="font-medium">{location}</span>
-                            <div className="flex items-center gap-2">
-                              <Button
-                                variant="outline"
-                                size="icon"
-                                onClick={() => handleEditLocation(location)}
-                                className="bg-amber-50 text-amber-600 border-amber-200 hover:bg-amber-100"
-                              >
-                                <Edit className="h-4 w-4" />
-                              </Button>
-                              <Button
-                                variant="outline"
-                                size="sm"
-                                onClick={() => removeLocation(location)}
-                                className="text-red-600 hover:text-red-700 hover:bg-red-50"
-                              >
-                                <Trash2 className="h-4 w-4" />
-                              </Button>
-                            </div>
+                      <div className="space-y-2">
+                        {locations.length === 0 ? (
+                          <div className="text-center py-8 text-gray-500">
+                            <div className="text-4xl mb-2">📍</div>
+                            <p>Geen locaties gevonden</p>
+                            <p className="text-sm mt-2">Voeg hierboven een nieuwe locatie toe</p>
                           </div>
-                        ))}
+                        ) : (
+                          locations.map((location) => (
+                            <div
+                              key={location}
+                              className="flex items-center justify-between p-4 bg-gray-50 rounded-lg border"
+                            >
+                              <div className="flex-1">
+                                <div className="font-medium text-gray-900">{location}</div>
+                                <div className="text-sm text-gray-600">
+                                  {registrations.filter((r) => r.location === location).length} registraties
+                                </div>
+                              </div>
+                              <div className="flex items-center gap-2">
+                                <Button
+                                  variant="outline"
+                                  size="icon"
+                                  onClick={() => handleEditLocation(location)}
+                                  className="bg-amber-50 text-amber-600 border-amber-200 hover:bg-amber-100"
+                                >
+                                  <Edit className="h-4 w-4" />
+                                </Button>
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  onClick={() => removeLocation(location)}
+                                  className="text-red-600 hover:text-red-700 hover:bg-red-50"
+                                >
+                                  <Trash2 className="h-4 w-4" />
+                                </Button>
+                              </div>
+                            </div>
+                          ))
+                        )}
                       </div>
-
-                      {locations.length === 0 && (
-                        <div className="text-center py-8 text-gray-500">
-                          <div className="text-4xl mb-2">📍</div>
-                          <p>Geen locaties gevonden</p>
-                        </div>
-                      )}
                     </div>
                   </CardContent>
                 </Card>
@@ -3211,9 +3257,9 @@ export default function ProductRegistrationApp() {
 
               <TabsContent value="purposes">
                 <Card className="shadow-sm">
-                  <CardHeader className="bg-gradient-to-r from-purple-50 to-pink-50 border-b">
+                  <CardHeader className="bg-gradient-to-r from-teal-50 to-cyan-50 border-b">
                     <CardTitle className="flex items-center gap-2 text-xl">🎯 Doelen Beheer</CardTitle>
-                    <CardDescription>Beheer beschikbare doelen voor product gebruik</CardDescription>
+                    <CardDescription>Beheer doelen waarvoor producten gebruikt kunnen worden</CardDescription>
                   </CardHeader>
                   <CardContent className="p-6">
                     <div className="space-y-6">
@@ -3232,45 +3278,51 @@ export default function ProductRegistrationApp() {
                           className="flex items-center gap-2"
                         >
                           <Plus className="h-4 w-4" />
-                          Toevoegen
+                          Doel Toevoegen
                         </Button>
                       </div>
 
-                      <div className="grid gap-2">
-                        {purposes.map((purpose) => (
-                          <div
-                            key={purpose}
-                            className="flex items-center justify-between p-3 bg-gray-50 rounded-lg border"
-                          >
-                            <span className="font-medium">{purpose}</span>
-                            <div className="flex items-center gap-2">
-                              <Button
-                                variant="outline"
-                                size="icon"
-                                onClick={() => handleEditPurpose(purpose)}
-                                className="bg-amber-50 text-amber-600 border-amber-200 hover:bg-amber-100"
-                              >
-                                <Edit className="h-4 w-4" />
-                              </Button>
-                              <Button
-                                variant="outline"
-                                size="sm"
-                                onClick={() => removePurpose(purpose)}
-                                className="text-red-600 hover:text-red-700 hover:bg-red-50"
-                              >
-                                <Trash2 className="h-4 w-4" />
-                              </Button>
-                            </div>
+                      <div className="space-y-2">
+                        {purposes.length === 0 ? (
+                          <div className="text-center py-8 text-gray-500">
+                            <div className="text-4xl mb-2">🎯</div>
+                            <p>Geen doelen gevonden</p>
+                            <p className="text-sm mt-2">Voeg hierboven een nieuw doel toe</p>
                           </div>
-                        ))}
+                        ) : (
+                          purposes.map((purpose) => (
+                            <div
+                              key={purpose}
+                              className="flex items-center justify-between p-4 bg-gray-50 rounded-lg border"
+                            >
+                              <div className="flex-1">
+                                <div className="font-medium text-gray-900">{purpose}</div>
+                                <div className="text-sm text-gray-600">
+                                  {registrations.filter((r) => r.purpose === purpose).length} registraties
+                                </div>
+                              </div>
+                              <div className="flex items-center gap-2">
+                                <Button
+                                  variant="outline"
+                                  size="icon"
+                                  onClick={() => handleEditPurpose(purpose)}
+                                  className="bg-amber-50 text-amber-600 border-amber-200 hover:bg-amber-100"
+                                >
+                                  <Edit className="h-4 w-4" />
+                                </Button>
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  onClick={() => removePurpose(purpose)}
+                                  className="text-red-600 hover:text-red-700 hover:bg-red-50"
+                                >
+                                  <Trash2 className="h-4 w-4" />
+                                </Button>
+                              </div>
+                            </div>
+                          ))
+                        )}
                       </div>
-
-                      {purposes.length === 0 && (
-                        <div className="text-center py-8 text-gray-500">
-                          <div className="text-4xl mb-2">🎯</div>
-                          <p>Geen doelen gevonden</p>
-                        </div>
-                      )}
                     </div>
                   </CardContent>
                 </Card>
@@ -3278,58 +3330,67 @@ export default function ProductRegistrationApp() {
 
               <TabsContent value="statistics">
                 <div className="space-y-6">
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
                     <Card className="shadow-sm">
-                      <CardHeader className="bg-gradient-to-r from-blue-50 to-indigo-50 border-b">
+                      <CardHeader className="pb-2">
                         <CardTitle className="text-lg">📊 Totaal Registraties</CardTitle>
                       </CardHeader>
-                      <CardContent className="p-6">
+                      <CardContent>
                         <div className="text-3xl font-bold text-blue-600">{registrations.length}</div>
                         <p className="text-sm text-gray-600 mt-1">Alle product registraties</p>
                       </CardContent>
                     </Card>
 
                     <Card className="shadow-sm">
-                      <CardHeader className="bg-gradient-to-r from-green-50 to-emerald-50 border-b">
-                        <CardTitle className="text-lg">👥 Unieke Gebruikers</CardTitle>
+                      <CardHeader className="pb-2">
+                        <CardTitle className="text-lg">👥 Actieve Gebruikers</CardTitle>
                       </CardHeader>
-                      <CardContent className="p-6">
-                        <div className="text-3xl font-bold text-green-600">
-                          {new Set(registrations.map((r) => r.user)).size}
-                        </div>
-                        <p className="text-sm text-gray-600 mt-1">Actieve gebruikers</p>
+                      <CardContent>
+                        <div className="text-3xl font-bold text-green-600">{users.length}</div>
+                        <p className="text-sm text-gray-600 mt-1">Geregistreerde gebruikers</p>
                       </CardContent>
                     </Card>
 
                     <Card className="shadow-sm">
-                      <CardHeader className="bg-gradient-to-r from-amber-50 to-orange-50 border-b">
-                        <CardTitle className="text-lg">📦 Unieke Producten</CardTitle>
+                      <CardHeader className="pb-2">
+                        <CardTitle className="text-lg">📦 Producten</CardTitle>
                       </CardHeader>
-                      <CardContent className="p-6">
-                        <div className="text-3xl font-bold text-amber-600">
-                          {new Set(registrations.map((r) => r.product)).size}
-                        </div>
-                        <p className="text-sm text-gray-600 mt-1">Geregistreerde producten</p>
+                      <CardContent>
+                        <div className="text-3xl font-bold text-orange-600">{products.length}</div>
+                        <p className="text-sm text-gray-600 mt-1">
+                          {products.filter((p) => p.qrcode).length} met QR code
+                        </p>
+                      </CardContent>
+                    </Card>
+
+                    <Card className="shadow-sm">
+                      <CardHeader className="pb-2">
+                        <CardTitle className="text-lg">📍 Locaties</CardTitle>
+                      </CardHeader>
+                      <CardContent>
+                        <div className="text-3xl font-bold text-purple-600">{locations.length}</div>
+                        <p className="text-sm text-gray-600 mt-1">Beschikbare locaties</p>
                       </CardContent>
                     </Card>
                   </div>
 
-                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                  <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
                     <Card className="shadow-sm">
-                      <CardHeader className="bg-gradient-to-r from-purple-50 to-pink-50 border-b">
-                        <CardTitle className="text-lg">🏆 Top 5 Gebruikers</CardTitle>
+                      <CardHeader>
+                        <CardTitle className="text-lg">🏆 Top Gebruikers</CardTitle>
+                        <CardDescription>Meest actieve gebruikers</CardDescription>
                       </CardHeader>
-                      <CardContent className="p-6">
+                      <CardContent>
                         <div className="space-y-3">
                           {getTopUsers().map(([user, count], index) => (
                             <div key={user} className="flex items-center justify-between">
-                              <div className="flex items-center gap-3">
-                                <div className="w-6 h-6 rounded-full bg-purple-100 text-purple-600 text-sm font-bold flex items-center justify-center">
+                              <div className="flex items-center gap-2">
+                                <div className="w-6 h-6 rounded-full bg-blue-100 text-blue-600 text-xs flex items-center justify-center font-medium">
                                   {index + 1}
                                 </div>
-                                <span className="font-medium">{user}</span>
+                                <span className="text-sm font-medium">{user}</span>
                               </div>
-                              <span className="text-purple-600 font-bold">{count}</span>
+                              <span className="text-sm text-gray-600">{count} registraties</span>
                             </div>
                           ))}
                         </div>
@@ -3337,20 +3398,23 @@ export default function ProductRegistrationApp() {
                     </Card>
 
                     <Card className="shadow-sm">
-                      <CardHeader className="bg-gradient-to-r from-teal-50 to-cyan-50 border-b">
-                        <CardTitle className="text-lg">📦 Top 5 Producten</CardTitle>
+                      <CardHeader>
+                        <CardTitle className="text-lg">📦 Top Producten</CardTitle>
+                        <CardDescription>Meest gebruikte producten</CardDescription>
                       </CardHeader>
-                      <CardContent className="p-6">
+                      <CardContent>
                         <div className="space-y-3">
                           {getTopProducts().map(([product, count], index) => (
                             <div key={product} className="flex items-center justify-between">
-                              <div className="flex items-center gap-3">
-                                <div className="w-6 h-6 rounded-full bg-teal-100 text-teal-600 text-sm font-bold flex items-center justify-center">
+                              <div className="flex items-center gap-2">
+                                <div className="w-6 h-6 rounded-full bg-orange-100 text-orange-600 text-xs flex items-center justify-center font-medium">
                                   {index + 1}
                                 </div>
-                                <span className="font-medium text-sm">{product}</span>
+                                <span className="text-sm font-medium truncate" title={product}>
+                                  {product.length > 20 ? `${product.substring(0, 20)}...` : product}
+                                </span>
                               </div>
-                              <span className="text-teal-600 font-bold">{count}</span>
+                              <span className="text-sm text-gray-600">{count}x</span>
                             </div>
                           ))}
                         </div>
@@ -3358,47 +3422,23 @@ export default function ProductRegistrationApp() {
                     </Card>
 
                     <Card className="shadow-sm">
-                      <CardHeader className="bg-gradient-to-r from-rose-50 to-red-50 border-b">
-                        <CardTitle className="text-lg">📍 Top 5 Locaties</CardTitle>
+                      <CardHeader>
+                        <CardTitle className="text-lg">📍 Top Locaties</CardTitle>
+                        <CardDescription>Meest gebruikte locaties</CardDescription>
                       </CardHeader>
-                      <CardContent className="p-6">
+                      <CardContent>
                         <div className="space-y-3">
                           {getTopLocations().map(([location, count], index) => (
                             <div key={location} className="flex items-center justify-between">
-                              <div className="flex items-center gap-3">
-                                <div className="w-6 h-6 rounded-full bg-rose-100 text-rose-600 text-sm font-bold flex items-center justify-center">
+                              <div className="flex items-center gap-2">
+                                <div className="w-6 h-6 rounded-full bg-purple-100 text-purple-600 text-xs flex items-center justify-center font-medium">
                                   {index + 1}
                                 </div>
-                                <span className="font-medium">{location}</span>
+                                <span className="text-sm font-medium truncate" title={location}>
+                                  {location.length > 20 ? `${location.substring(0, 20)}...` : location}
+                                </span>
                               </div>
-                              <span className="text-rose-600 font-bold">{count}</span>
-                            </div>
-                          ))}
-                        </div>
-                      </CardContent>
-                    </Card>
-
-                    <Card className="shadow-sm">
-                      <CardHeader className="bg-gradient-to-r from-indigo-50 to-blue-50 border-b">
-                        <CardTitle className="text-lg">📊 Product Verdeling</CardTitle>
-                      </CardHeader>
-                      <CardContent className="p-6">
-                        <div className="space-y-3">
-                          {getProductChartData().map(({ product, count, color }) => (
-                            <div key={product} className="space-y-2">
-                              <div className="flex justify-between text-sm">
-                                <span className="font-medium truncate">{product}</span>
-                                <span className="font-bold">{count}</span>
-                              </div>
-                              <div className="w-full bg-gray-200 rounded-full h-2">
-                                <div
-                                  className="h-2 rounded-full"
-                                  style={{
-                                    backgroundColor: color,
-                                    width: `${(count / Math.max(...getProductChartData().map((d) => d.count))) * 100}%`,
-                                  }}
-                                />
-                              </div>
+                              <span className="text-sm text-gray-600">{count}x</span>
                             </div>
                           ))}
                         </div>
@@ -3410,235 +3450,177 @@ export default function ProductRegistrationApp() {
             </>
           )}
         </Tabs>
+      </div>
 
-        {/* Edit User Dialog */}
-        <Dialog open={showEditUserDialog} onOpenChange={setShowEditUserDialog}>
-          <DialogContent>
-            <DialogHeader>
-              <DialogTitle>Gebruiker Bewerken</DialogTitle>
-              <DialogDescription>Wijzig de gebruikersgegevens en badge code</DialogDescription>
-            </DialogHeader>
+      {/* Edit User Dialog */}
+      <Dialog open={showEditUserDialog} onOpenChange={setShowEditUserDialog}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Gebruiker Bewerken</DialogTitle>
+            <DialogDescription>Pas de gebruikersgegevens aan</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div>
+              <Label>Naam</Label>
+              <Input value={editingUser} onChange={(e) => setEditingUser(e.target.value)} />
+            </div>
+            <div>
+              <Label>Rol</Label>
+              <Select value={editingUserRole} onValueChange={setEditingUserRole}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="user">User</SelectItem>
+                  <SelectItem value="admin">Admin</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label>Badge Code</Label>
+              <Input
+                value={editingUserBadgeCode}
+                onChange={(e) => setEditingUserBadgeCode(e.target.value)}
+                placeholder="Badge ID (optioneel)"
+              />
+            </div>
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" onClick={() => setShowEditUserDialog(false)}>
+                Annuleren
+              </Button>
+              <Button onClick={handleSaveUser} disabled={isLoading}>
+                {isLoading ? "Opslaan..." : "Opslaan"}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Edit Product Dialog */}
+      <Dialog open={showEditDialog} onOpenChange={setShowEditDialog}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Product Bewerken</DialogTitle>
+            <DialogDescription>Pas de productgegevens aan</DialogDescription>
+          </DialogHeader>
+          {editingProduct && (
             <div className="space-y-4">
               <div>
                 <Label>Naam</Label>
                 <Input
-                  value={editingUser}
-                  onChange={(e) => setEditingUser(e.target.value)}
-                  placeholder="Gebruikersnaam"
+                  value={editingProduct.name}
+                  onChange={(e) => setEditingProduct({ ...editingProduct, name: e.target.value })}
                 />
               </div>
               <div>
-                <Label>Rol</Label>
-                <Select value={editingUserRole} onValueChange={setEditingUserRole}>
+                <Label>QR Code</Label>
+                <Input
+                  value={editingProduct.qrcode || ""}
+                  onChange={(e) => setEditingProduct({ ...editingProduct, qrcode: e.target.value })}
+                />
+              </div>
+              <div>
+                <Label>Categorie</Label>
+                <Select
+                  value={editingProduct.categoryId || "none"}
+                  onValueChange={(value) =>
+                    setEditingProduct({ ...editingProduct, categoryId: value === "none" ? undefined : value })
+                  }
+                >
                   <SelectTrigger>
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="user">User</SelectItem>
-                    <SelectItem value="admin">Admin</SelectItem>
+                    <SelectItem value="none">Geen categorie</SelectItem>
+                    {categories.map((category) => (
+                      <SelectItem key={category.id} value={category.id}>
+                        {category.name}
+                      </SelectItem>
+                    ))}
                   </SelectContent>
                 </Select>
               </div>
-              <div>
-                <Label>Badge Code</Label>
-                <Input
-                  value={editingUserBadgeCode}
-                  onChange={(e) => setEditingUserBadgeCode(e.target.value)}
-                  placeholder="Badge ID (optioneel)"
-                />
-              </div>
               <div className="flex justify-end gap-2">
-                <Button variant="outline" onClick={() => setShowEditUserDialog(false)}>
+                <Button variant="outline" onClick={() => setShowEditDialog(false)}>
                   Annuleren
                 </Button>
-                <Button onClick={handleSaveUser} disabled={isLoading}>
-                  {isLoading ? "Opslaan..." : "Opslaan"}
-                </Button>
+                <Button onClick={handleSaveProduct}>Opslaan</Button>
               </div>
             </div>
-          </DialogContent>
-        </Dialog>
+          )}
+        </DialogContent>
+      </Dialog>
 
-        {/* Edit Product Dialog */}
-        <Dialog open={showEditDialog} onOpenChange={setShowEditDialog}>
-          <DialogContent>
-            <DialogHeader>
-              <DialogTitle>Product Bewerken</DialogTitle>
-              <DialogDescription>Wijzig de productgegevens</DialogDescription>
-            </DialogHeader>
-            {editingProduct && (
-              <div className="space-y-4">
-                <div>
-                  <Label>Naam</Label>
-                  <Input
-                    value={editingProduct.name}
-                    onChange={(e) => setEditingProduct({ ...editingProduct, name: e.target.value })}
-                  />
-                </div>
-                <div>
-                  <Label>QR Code</Label>
-                  <Input
-                    value={editingProduct.qrcode || ""}
-                    onChange={(e) => setEditingProduct({ ...editingProduct, qrcode: e.target.value })}
-                  />
-                </div>
-                <div>
-                  <Label>Categorie</Label>
-                  <Select
-                    value={editingProduct.categoryId || "none"}
-                    onValueChange={(value) =>
-                      setEditingProduct({ ...editingProduct, categoryId: value === "none" ? undefined : value })
-                    }
-                  >
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="none">Geen categorie</SelectItem>
-                      {categories.map((category) => (
-                        <SelectItem key={category.id} value={category.id}>
-                          {category.name}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div className="flex justify-end gap-2">
-                  <Button variant="outline" onClick={() => setShowEditDialog(false)}>
-                    Annuleren
-                  </Button>
-                  <Button onClick={handleSaveProduct}>Opslaan</Button>
-                </div>
-              </div>
-            )}
-          </DialogContent>
-        </Dialog>
-
-        {/* Edit Category Dialog */}
-        <Dialog open={showEditCategoryDialog} onOpenChange={setShowEditCategoryDialog}>
-          <DialogContent>
-            <DialogHeader>
-              <DialogTitle>Categorie Bewerken</DialogTitle>
-              <DialogDescription>Wijzig de categorienaam</DialogDescription>
-            </DialogHeader>
-            {editingCategory && (
-              <div className="space-y-4">
-                <div>
-                  <Label>Naam</Label>
-                  <Input
-                    value={editingCategory.name}
-                    onChange={(e) => setEditingCategory({ ...editingCategory, name: e.target.value })}
-                  />
-                </div>
-                <div className="flex justify-end gap-2">
-                  <Button variant="outline" onClick={() => setShowEditCategoryDialog(false)}>
-                    Annuleren
-                  </Button>
-                  <Button onClick={handleSaveCategory}>Opslaan</Button>
-                </div>
-              </div>
-            )}
-          </DialogContent>
-        </Dialog>
-
-        {/* Edit Location Dialog */}
-        <Dialog open={showEditLocationDialog} onOpenChange={setShowEditLocationDialog}>
-          <DialogContent>
-            <DialogHeader>
-              <DialogTitle>Locatie Bewerken</DialogTitle>
-              <DialogDescription>Wijzig de locatienaam</DialogDescription>
-            </DialogHeader>
+      {/* Edit Category Dialog */}
+      <Dialog open={showEditCategoryDialog} onOpenChange={setShowEditCategoryDialog}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Categorie Bewerken</DialogTitle>
+            <DialogDescription>Pas de categorienaam aan</DialogDescription>
+          </DialogHeader>
+          {editingCategory && (
             <div className="space-y-4">
               <div>
                 <Label>Naam</Label>
                 <Input
-                  value={editingLocation}
-                  onChange={(e) => setEditingLocation(e.target.value)}
-                  placeholder="Locatienaam"
+                  value={editingCategory.name}
+                  onChange={(e) => setEditingCategory({ ...editingCategory, name: e.target.value })}
                 />
               </div>
               <div className="flex justify-end gap-2">
-                <Button variant="outline" onClick={() => setShowEditLocationDialog(false)}>
+                <Button variant="outline" onClick={() => setShowEditCategoryDialog(false)}>
                   Annuleren
                 </Button>
-                <Button onClick={handleSaveLocation}>Opslaan</Button>
+                <Button onClick={handleSaveCategory}>Opslaan</Button>
               </div>
             </div>
-          </DialogContent>
-        </Dialog>
+          )}
+        </DialogContent>
+      </Dialog>
 
-        {/* Edit Purpose Dialog */}
-        <Dialog open={showEditPurposeDialog} onOpenChange={setShowEditPurposeDialog}>
-          <DialogContent>
-            <DialogHeader>
-              <DialogTitle>Doel Bewerken</DialogTitle>
-              <DialogDescription>Wijzig het doel</DialogDescription>
-            </DialogHeader>
-            <div className="space-y-4">
-              <div>
-                <Label>Naam</Label>
-                <Input
-                  value={editingPurpose}
-                  onChange={(e) => setEditingPurpose(e.target.value)}
-                  placeholder="Doel naam"
-                />
-              </div>
-              <div className="flex justify-end gap-2">
-                <Button variant="outline" onClick={() => setShowEditPurposeDialog(false)}>
-                  Annuleren
-                </Button>
-                <Button onClick={handleSavePurpose}>Opslaan</Button>
-              </div>
+      {/* Edit Location Dialog */}
+      <Dialog open={showEditLocationDialog} onOpenChange={setShowEditLocationDialog}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Locatie Bewerken</DialogTitle>
+            <DialogDescription>Pas de locatienaam aan</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div>
+              <Label>Naam</Label>
+              <Input value={editingLocation} onChange={(e) => setEditingLocation(e.target.value)} />
             </div>
-          </DialogContent>
-        </Dialog>
-
-        {/* QR Scanner Modal */}
-        {showQrScanner && (
-          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-            <div className="bg-white p-6 rounded-lg max-w-md w-full mx-4">
-              <div className="flex justify-between items-center mb-4">
-                <h3 className="text-lg font-semibold">QR Code Scanner</h3>
-                <Button variant="ghost" size="sm" onClick={stopQrScanner}>
-                  <X className="h-4 w-4" />
-                </Button>
-              </div>
-              <div className="space-y-4">
-                <div className="text-center">
-                  <div className="text-6xl mb-4">📱</div>
-                  <p className="text-gray-600 mb-4">Scan een QR code of voer handmatig in</p>
-                </div>
-                <div className="space-y-2">
-                  <Label>QR Code</Label>
-                  <Input
-                    placeholder="Scan of typ QR code..."
-                    value={qrScanResult}
-                    onChange={(e) => setQrScanResult(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter" && qrScanResult.trim()) {
-                        handleQrCodeDetected(qrScanResult.trim())
-                      }
-                    }}
-                    autoFocus
-                  />
-                </div>
-                <div className="flex gap-2">
-                  <Button
-                    onClick={() => qrScanResult.trim() && handleQrCodeDetected(qrScanResult.trim())}
-                    disabled={!qrScanResult.trim()}
-                    className="flex-1"
-                  >
-                    ✅ Bevestigen
-                  </Button>
-                  <Button variant="outline" onClick={stopQrScanner} className="flex-1 bg-transparent">
-                    ❌ Annuleren
-                  </Button>
-                </div>
-              </div>
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" onClick={() => setShowEditLocationDialog(false)}>
+                Annuleren
+              </Button>
+              <Button onClick={handleSaveLocation}>Opslaan</Button>
             </div>
           </div>
-        )}
-      </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Edit Purpose Dialog */}
+      <Dialog open={showEditPurposeDialog} onOpenChange={setShowEditPurposeDialog}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Doel Bewerken</DialogTitle>
+            <DialogDescription>Pas de doelnaam aan</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div>
+              <Label>Naam</Label>
+              <Input value={editingPurpose} onChange={(e) => setEditingPurpose(e.target.value)} />
+            </div>
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" onClick={() => setShowEditPurposeDialog(false)}>
+                Annuleren
+              </Button>
+              <Button onClick={handleSavePurpose}>Opslaan</Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }
